@@ -1,0 +1,83 @@
+name: Build and Push Docker Image on Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch and Parse Release Data
+        id: release_info
+        run: |
+          release_info=$(gh release view --repo ${{ github.repository }} --json apiUrl,assets,author,body,createdAt,id,isDraft,isPrerelease,name,publishedAt,tagName,tarballUrl,targetCommitish,uploadUrl,url,zipballUrl | jq '.')
+          echo "API_URL=$(echo "$release_info" | jq -r '.apiUrl')" >> $GITHUB_ENV
+          echo "AUTHOR=$(echo "$release_info" | jq -r '.author.login')" >> $GITHUB_ENV
+          echo "BODY=$(echo "$release_info" | jq -r '.body')" >> $GITHUB_ENV
+          echo "CREATED_AT=$(echo "$release_info" | jq -r '.createdAt')" >> $GITHUB_ENV
+          echo "RELEASE_ID=$(echo "$release_info" | jq -r '.id')" >> $GITHUB_ENV
+          echo "IS_DRAFT=$(echo "$release_info" | jq -r '.isDraft')" >> $GITHUB_ENV
+          echo "IS_PRERELEASE=$(echo "$release_info" | jq -r '.isPrerelease')" >> $GITHUB_ENV
+          echo "NAME=$(echo "$release_info" | jq -r '.name')" >> $GITHUB_ENV
+          echo "PUBLISHED_AT=$(echo "$release_info" | jq -r '.publishedAt')" >> $GITHUB_ENV
+          tag_name=$(echo "$release_info" | jq -r '.tagName')
+          echo "TAG_NAME=$tag_name" >> $GITHUB_ENV
+          image_version="${tag_name#v}"
+          echo "IMAGE_VERSION=$image_version" >> $GITHUB_ENV
+          echo "TARGET_COMMITISH=$(echo "$release_info" | jq -r '.targetCommitish')" >> $GITHUB_ENV
+          echo "UPLOAD_URL=$(echo "$release_info" | jq -r '.uploadUrl')" >> $GITHUB_ENV
+          echo "URL=$(echo "$release_info" | jq -r '.url')" >> $GITHUB_ENV
+          echo "ZIPBALL_URL=$(echo "$release_info" | jq -r '.zipballUrl')" >> $GITHUB_ENV
+      
+          # Additional variables for asset info (ensure to fetch asset info correctly)
+          asset_info=$(gh release view --repo ${{ github.repository }} --json assets | jq '.assets[]')
+          echo "ASSET_NAME=$(echo "$asset_info" | jq -r '.name')" >> $GITHUB_ENV
+          echo "ASSET_URL=$(echo "$asset_info" | jq -r '.url')" >> $GITHUB_ENV
+          echo "ASSET_SIZE=$(echo "$asset_info" | jq -r '.size')" >> $GITHUB_ENV
+          echo "ASSET_DOWNLOAD_COUNT=$(echo "$asset_info" | jq -r '.downloadCount')" >> $GITHUB_ENV
+          echo "ASSET_CREATED_AT=$(echo "$asset_info" | jq -r '.createdAt')" >> $GITHUB_ENV
+
+      - name: Build and Push Image
+        run: |
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_NAME="ghcr.io/${REPO_LOWER}:${{ env.IMAGE_VERSION }}"
+          LATEST_IMAGE_NAME="ghcr.io/${REPO_LOWER}:latest"
+          docker buildx build \
+            --platform linux/amd64 \
+            --tag $IMAGE_NAME \
+            --tag $LATEST_IMAGE_NAME \
+            --label "org.opencontainers.image.version=${{ env.IMAGE_VERSION }}" \
+            --label "org.opencontainers.image.description=${{ vars.APP_NAME }} image based on the linuxserver version with a few customizations" \
+            --push \
+            --file Dockerfile \
+            --build-arg GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} \
+            --build-arg VERSION=${{ env.IMAGE_VERSION }} \
+            --build-arg ZIP_DOWNLOAD_LINK=${{ env.ASSET_URL }} \
+            --build-arg BRANCH="develop" \
+            .

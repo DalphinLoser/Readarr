@@ -62,5 +62,5 @@ RUN mkdir -p /app/temp_root && \
     rm -rf /app/temp_root
 
 # Expose port and volume
-EXPOSE 1234
+EXPOSE 8787
 VOLUME /config
